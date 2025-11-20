@@ -1,0 +1,3 @@
+#!/bin/bash
+# Helper script to access container shell as www user
+docker compose exec --user www app bash

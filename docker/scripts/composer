@@ -1,0 +1,3 @@
+#!/bin/bash
+# Helper script to run composer commands as www user
+docker compose exec --user www app composer "$@"

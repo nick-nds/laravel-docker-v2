@@ -1,0 +1,197 @@
+services:
+  # PHP-FPM Service
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - UID=${UID:-1000}
+        - GID=${GID:-1000}
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-app
+    restart: unless-stopped
+    working_dir: /var/www
+    volumes:
+      - ./:/var/www
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
+      - ./docker/php/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
+    networks:
+      - crm
+    depends_on:
+      - mysql
+      - redis
+    environment:
+      - PHP_IDE_CONFIG=serverName=Docker
+
+  # Nginx Service
+  nginx:
+    image: nginx:alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-nginx
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_NGINX_LOCAL_PORT:-40443}:443"
+      - "8000:80"
+    volumes:
+      - ./:/var/www
+      - ./docker/nginx/conf.d:/etc/nginx/conf.d
+      - ./docker/nginx/ssl:/etc/nginx/ssl
+    networks:
+      - crm
+    depends_on:
+      - app
+
+  # MySQL Service (Main Database)
+  mysql:
+    image: mysql:8.4
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-mysql
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_MYSQL_LOCAL_PORT:-43306}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: ${DB_DATABASE:-landlord}
+      MYSQL_USER: ${DB_USERNAME:-app}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-app}
+      MYSQL_ALLOW_EMPTY_PASSWORD: 0
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./docker/mysql/my.cnf:/etc/mysql/conf.d/my.cnf
+      - ./docker/mysql/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql
+    networks:
+      - crm
+    command: --authentication-policy=mysql_native_password,* --mysql-native-password=ON
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # MySQL Test Database
+  mysql-test:
+    image: mysql:8.4
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-mysql-test
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_MYSQL_TEST_LOCAL_PORT:-43307}:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: testing
+      MYSQL_USER: app
+      MYSQL_PASSWORD: app
+      MYSQL_ALLOW_EMPTY_PASSWORD: 0
+    tmpfs:
+      - /var/lib/mysql
+    networks:
+      - crm
+    command: --authentication-policy=mysql_native_password,* --mysql-native-password=ON
+
+  # Redis Service
+  redis:
+    image: redis:7-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-redis
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_REDIS_LOCAL_PORT:-46379}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - crm
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Queue Worker
+  queue:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - UID=${UID:-1000}
+        - GID=${GID:-1000}
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-queue
+    restart: unless-stopped
+    working_dir: /var/www
+    user: "${UID:-1000}:${GID:-1000}"
+    volumes:
+      - ./:/var/www
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
+    networks:
+      - crm
+    depends_on:
+      - mysql
+      - redis
+    entrypoint: []
+    command: php artisan queue:work --sleep=3 --tries=3 --max-time=3600
+
+  # Reverb (WebSocket Server) - Optional Profile
+  reverb:
+    profiles: ["reverb"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        - UID=${UID:-1000}
+        - GID=${GID:-1000}
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-reverb
+    restart: unless-stopped
+    working_dir: /var/www
+    user: "${UID:-1000}:${GID:-1000}"
+    ports:
+      - "${DOCKER_REVERB_LOCAL_PORT:-48080}:8080"
+    volumes:
+      - ./:/var/www
+      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
+    networks:
+      - crm
+    depends_on:
+      - mysql
+      - redis
+    entrypoint: []
+    command: php artisan reverb:start --host=0.0.0.0 --port=8080
+
+  # Mailpit (Email Testing)
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-mailpit
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_MAILPIT_SMTP_LOCAL_PORT:-41025}:1025"
+      - "${DOCKER_MAILPIT_WEB_LOCAL_PORT:-48025}:8025"
+    networks:
+      - crm
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+  # LocalStack (AWS S3 Emulation) - Optional Profile
+  localstack:
+    profiles: ["localstack"]
+    image: localstack/localstack:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-crm}-localstack
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_LOCALSTACK_LOCAL_PORT:-44566}:4566"
+    environment:
+      - SERVICES=s3
+      - DEBUG=1
+      - DATA_DIR=/tmp/localstack/data
+      - DOCKER_HOST=unix:///var/run/docker.sock
+    volumes:
+      - localstack_data:/tmp/localstack
+      - /var/run/docker.sock:/var/run/docker.sock
+    networks:
+      - crm
+
+networks:
+  crm:
+    driver: bridge
+
+volumes:
+  mysql_data:
+    driver: local
+  redis_data:
+    driver: local
+  localstack_data:
+    driver: local

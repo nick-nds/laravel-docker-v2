@@ -1,0 +1,24 @@
+# Laravel Application Directory
+app/
+
+# Docker Environment
+.env
+
+# SSL Certificates
+docker/nginx/ssl/*.pem
+docker/nginx/ssl/*.crt
+docker/nginx/ssl/*.key
+
+# Logs
+*.log
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
