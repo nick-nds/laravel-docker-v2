@@ -1,75 +1,42 @@
-# MySQL Configuration
+# MySQL config
 
-This directory contains MySQL configuration files for the Docker setup.
+MySQL 8.4 configuration used by the `mysql` service in `docker-compose.yml`.
 
 ## Files
 
-### `my.cnf`
-MySQL server configuration with optimized settings for Laravel development.
+- **`my.cnf`** — server tunings for Laravel dev (utf8mb4 everywhere, modest InnoDB buffer, slow-query logging on).
+- **`init-databases.sql`** — runs once on first container startup. Creates the `laravel_testing` database and grants the `app` user. The main `laravel` database is created automatically by the `MYSQL_DATABASE` env var, so it isn't in this file.
 
-### `init-databases.sql`
-Initialization script that creates default databases on first container startup.
-
-**Created Databases:**
-- `landlord` - Central tenant management database
-- `tenant1` - First tenant database
-- `tenant2` - Second tenant database
-
-**Note:** This script only runs on **first initialization** when the MySQL data volume is empty.
-
-## How Database Initialization Works
-
-The MySQL Docker image automatically executes `.sql` files in `/docker-entrypoint-initdb.d/` directory when:
-1. Container starts for the first time
-2. MySQL data volume is empty (no existing data)
-
-If databases already exist, the script is skipped.
-
-## Resetting Databases
-
-To re-run the initialization script:
+The init script only executes when the `mysql_data` volume is empty. To re-run it:
 
 ```bash
-# Stop containers
 docker compose down
-
-# Remove MySQL volume (⚠️ WARNING: Deletes all data!)
-docker volume rm crm_mysql_data
-
-# Start containers (init script will run)
+docker volume rm ${COMPOSE_PROJECT_NAME:-laravel}_mysql_data
 docker compose up -d
 ```
 
-## Adding More Databases
+## Customizing
 
-Edit `init-databases.sql` and add:
+**Add another database (e.g. a second tenant):**
 
 ```sql
-CREATE DATABASE IF NOT EXISTS `your_database`
+CREATE DATABASE IF NOT EXISTS `tenant_1`
     CHARACTER SET utf8mb4
     COLLATE utf8mb4_unicode_ci;
 
-GRANT ALL PRIVILEGES ON `your_database`.* TO 'app'@'%';
+GRANT ALL PRIVILEGES ON `tenant_1`.* TO 'app'@'%';
 ```
 
-Then reset the MySQL volume (see above).
+Then reset the volume (see above).
 
-## Connecting to Databases
+**Connect from the host:**
 
 ```bash
-# Connect to landlord database
-docker compose exec mysql mysql -uapp -papp landlord
-
-# Connect to tenant database
-docker compose exec mysql mysql -uapp -papp tenant1
-
-# List all databases
-docker compose exec mysql mysql -uroot -proot -e "SHOW DATABASES;"
+mysql -h 127.0.0.1 -P 43306 -u app -papp laravel
 ```
 
-## Credentials
+**Connect from inside the compose network:**
 
-Default credentials (configured in `.env`):
-- **Root Password**: `root`
-- **User**: `app`
-- **Password**: `app`
+```bash
+docker compose exec mysql mysql -u app -papp laravel
+```

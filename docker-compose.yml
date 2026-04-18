@@ -1,100 +1,125 @@
+name: ${COMPOSE_PROJECT_NAME:-laravel}
+
 services:
-  # PHP-FPM Service
+  # --------------------------------------------------------------------------
+  # PHP-FPM application container (dev target of the multi-stage Dockerfile)
+  # --------------------------------------------------------------------------
   app:
     build:
       context: .
       dockerfile: Dockerfile
+      target: dev
       args:
+        - PHP_VERSION=${PHP_VERSION:-8.4}
         - UID=${UID:-1000}
         - GID=${GID:-1000}
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-app
+    image: ${COMPOSE_PROJECT_NAME:-laravel}-app:dev
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-app
     restart: unless-stopped
     working_dir: /var/www
     volumes:
       - ./:/var/www
-      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
-      - ./docker/php/xdebug.ini:/usr/local/etc/php/conf.d/docker-php-ext-xdebug.ini
     networks:
-      - crm
+      - laravel
     depends_on:
-      - mysql
-      - redis
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
       - PHP_IDE_CONFIG=serverName=Docker
+      - XDEBUG_MODE=${XDEBUG_MODE:-debug,develop,coverage}
 
-  # Nginx Service
+  # --------------------------------------------------------------------------
+  # Nginx
+  # --------------------------------------------------------------------------
   nginx:
-    image: nginx:alpine
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-nginx
+    image: nginx:1.27-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-nginx
     restart: unless-stopped
     ports:
-      - "${DOCKER_NGINX_LOCAL_PORT:-40443}:443"
-      - "8000:80"
+      - "${DOCKER_NGINX_HTTP_PORT:-8000}:80"
+      - "${DOCKER_NGINX_HTTPS_PORT:-40443}:443"
     volumes:
       - ./:/var/www
       - ./docker/nginx/conf.d:/etc/nginx/conf.d
       - ./docker/nginx/ssl:/etc/nginx/ssl
     networks:
-      - crm
+      - laravel
     depends_on:
       - app
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
 
-  # MySQL Service (Main Database)
+  # --------------------------------------------------------------------------
+  # MySQL (default DB — swap to Postgres by adding a compose override)
+  # --------------------------------------------------------------------------
   mysql:
     image: mysql:8.4
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-mysql
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-mysql
     restart: unless-stopped
     ports:
       - "${DOCKER_MYSQL_LOCAL_PORT:-43306}:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: ${DB_DATABASE:-landlord}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_DATABASE:-laravel}
       MYSQL_USER: ${DB_USERNAME:-app}
       MYSQL_PASSWORD: ${DB_PASSWORD:-app}
-      MYSQL_ALLOW_EMPTY_PASSWORD: 0
     volumes:
       - mysql_data:/var/lib/mysql
       - ./docker/mysql/my.cnf:/etc/mysql/conf.d/my.cnf
       - ./docker/mysql/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql
     networks:
-      - crm
-    command: --authentication-policy=mysql_native_password,* --mysql-native-password=ON
+      - laravel
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-proot"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-root}"]
       interval: 10s
       timeout: 5s
-      retries: 5
+      retries: 10
+      start_period: 30s
 
-  # MySQL Test Database
+  # --------------------------------------------------------------------------
+  # MySQL test DB (tmpfs-backed, enabled via `--profile testing`)
+  # --------------------------------------------------------------------------
   mysql-test:
+    profiles: ["testing"]
     image: mysql:8.4
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-mysql-test
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-mysql-test
     restart: unless-stopped
     ports:
-      - "${DOCKER_MYSQL_TEST_LOCAL_PORT:-43307}:3306"
+      - "${DOCKER_MYSQL_TEST_PORT:-43307}:3306"
     environment:
-      MYSQL_ROOT_PASSWORD: root
-      MYSQL_DATABASE: testing
-      MYSQL_USER: app
-      MYSQL_PASSWORD: app
-      MYSQL_ALLOW_EMPTY_PASSWORD: 0
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:-root}
+      MYSQL_DATABASE: ${DB_TEST_DATABASE:-laravel_testing}
+      MYSQL_USER: ${DB_USERNAME:-app}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-app}
     tmpfs:
       - /var/lib/mysql
     networks:
-      - crm
-    command: --authentication-policy=mysql_native_password,* --mysql-native-password=ON
+      - laravel
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "root", "-p${DB_ROOT_PASSWORD:-root}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
 
-  # Redis Service
+  # --------------------------------------------------------------------------
+  # Redis
+  # --------------------------------------------------------------------------
   redis:
-    image: redis:7-alpine
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-redis
+    image: redis:8-alpine
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-redis
     restart: unless-stopped
     ports:
       - "${DOCKER_REDIS_LOCAL_PORT:-46379}:6379"
     volumes:
       - redis_data:/data
     networks:
-      - crm
+      - laravel
     command: redis-server --appendonly yes
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -102,39 +127,92 @@ services:
       timeout: 5s
       retries: 5
 
-  # Queue Worker
+  # --------------------------------------------------------------------------
+  # Queue worker — reuses the already-built `app` image
+  # --------------------------------------------------------------------------
   queue:
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        - UID=${UID:-1000}
-        - GID=${GID:-1000}
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-queue
+    image: ${COMPOSE_PROJECT_NAME:-laravel}-app:dev
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-queue
     restart: unless-stopped
     working_dir: /var/www
     user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./:/var/www
-      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
     networks:
-      - crm
+      - laravel
     depends_on:
-      - mysql
-      - redis
+      app:
+        condition: service_started
+      redis:
+        condition: service_healthy
     entrypoint: []
     command: php artisan queue:work --sleep=3 --tries=3 --max-time=3600
 
-  # Reverb (WebSocket Server) - Optional Profile
+  # --------------------------------------------------------------------------
+  # Mailpit (dev SMTP + web UI)
+  # --------------------------------------------------------------------------
+  mailpit:
+    image: axllent/mailpit:v1.20
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-mailpit
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_MAILPIT_SMTP_PORT:-41025}:1025"
+      - "${DOCKER_MAILPIT_WEB_PORT:-48025}:8025"
+    networks:
+      - laravel
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: 1
+      MP_SMTP_AUTH_ALLOW_INSECURE: 1
+
+  # --------------------------------------------------------------------------
+  # MinIO (S3-compatible object storage) + init sidecar to create the bucket
+  # --------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-minio
+    restart: unless-stopped
+    ports:
+      - "${DOCKER_MINIO_API_PORT:-49000}:9000"
+      - "${DOCKER_MINIO_CONSOLE_PORT:-49001}:9001"
+    environment:
+      MINIO_ROOT_USER: ${AWS_ACCESS_KEY_ID:-local}
+      MINIO_ROOT_PASSWORD: ${AWS_SECRET_ACCESS_KEY:-localsecret}
+    volumes:
+      - minio_data:/data
+    networks:
+      - laravel
+    command: server /data --console-address ":9001"
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  minio-init:
+    image: minio/mc:latest
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    networks:
+      - laravel
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 ${AWS_ACCESS_KEY_ID:-local} ${AWS_SECRET_ACCESS_KEY:-localsecret} &&
+      mc mb --ignore-existing local/${AWS_BUCKET:-laravel-local} &&
+      mc anonymous set download local/${AWS_BUCKET:-laravel-local} &&
+      exit 0
+      "
+    restart: "no"
+
+  # --------------------------------------------------------------------------
+  # Reverb (WebSockets) — enabled via `--profile reverb`
+  # --------------------------------------------------------------------------
   reverb:
     profiles: ["reverb"]
-    build:
-      context: .
-      dockerfile: Dockerfile
-      args:
-        - UID=${UID:-1000}
-        - GID=${GID:-1000}
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-reverb
+    image: ${COMPOSE_PROJECT_NAME:-laravel}-app:dev
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-reverb
     restart: unless-stopped
     working_dir: /var/www
     user: "${UID:-1000}:${GID:-1000}"
@@ -142,50 +220,32 @@ services:
       - "${DOCKER_REVERB_LOCAL_PORT:-48080}:8080"
     volumes:
       - ./:/var/www
-      - ./docker/php/local.ini:/usr/local/etc/php/conf.d/local.ini
     networks:
-      - crm
+      - laravel
     depends_on:
-      - mysql
-      - redis
+      app:
+        condition: service_started
+      redis:
+        condition: service_healthy
     entrypoint: []
     command: php artisan reverb:start --host=0.0.0.0 --port=8080
 
-  # Mailpit (Email Testing)
-  mailpit:
-    image: axllent/mailpit:latest
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-mailpit
-    restart: unless-stopped
-    ports:
-      - "${DOCKER_MAILPIT_SMTP_LOCAL_PORT:-41025}:1025"
-      - "${DOCKER_MAILPIT_WEB_LOCAL_PORT:-48025}:8025"
-    networks:
-      - crm
-    environment:
-      MP_SMTP_AUTH_ACCEPT_ANY: 1
-      MP_SMTP_AUTH_ALLOW_INSECURE: 1
-
-  # LocalStack (AWS S3 Emulation) - Optional Profile
-  localstack:
-    profiles: ["localstack"]
-    image: localstack/localstack:latest
-    container_name: ${COMPOSE_PROJECT_NAME:-crm}-localstack
-    restart: unless-stopped
-    ports:
-      - "${DOCKER_LOCALSTACK_LOCAL_PORT:-44566}:4566"
-    environment:
-      - SERVICES=s3
-      - DEBUG=1
-      - DATA_DIR=/tmp/localstack/data
-      - DOCKER_HOST=unix:///var/run/docker.sock
+  # --------------------------------------------------------------------------
+  # One-shot Composer runner — enabled via `--profile tools`
+  # Useful when the app container isn't up yet (e.g. `composer create-project`)
+  # --------------------------------------------------------------------------
+  composer:
+    profiles: ["tools"]
+    image: composer:2
+    container_name: ${COMPOSE_PROJECT_NAME:-laravel}-composer
+    working_dir: /app
     volumes:
-      - localstack_data:/tmp/localstack
-      - /var/run/docker.sock:/var/run/docker.sock
+      - ./:/app
     networks:
-      - crm
+      - laravel
 
 networks:
-  crm:
+  laravel:
     driver: bridge
 
 volumes:
@@ -193,5 +253,5 @@ volumes:
     driver: local
   redis_data:
     driver: local
-  localstack_data:
+  minio_data:
     driver: local

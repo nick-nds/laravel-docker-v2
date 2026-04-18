@@ -4,26 +4,32 @@
 .env.*
 !.env.example
 
+# Build artifacts of other stacks
 node_modules
 npm-debug.log
 yarn-error.log
 
+# Host-built vendor directory (prod image builds its own via the vendor stage)
 vendor
-composer.lock
 
+# Laravel runtime
 storage/logs/*.log
 storage/framework/cache/*
 storage/framework/sessions/*
 storage/framework/testing/*
 storage/framework/views/*
 
+# Test caches
 .phpunit.result.cache
 .phpunit.cache
 
+# Not needed in a prod image — dev bind-mount exposes them regardless
 tests/
+docs/
 *.md
 README*
 
+# IDE
 .idea
 .vscode
 .fleet
